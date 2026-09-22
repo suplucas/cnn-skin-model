@@ -22,6 +22,20 @@ data:
   fold: 1
   preprocessed_dir: ""  # se preenchido, usa imagens pré-processadas (pula OpenCV online)
 
+preprocessing:
+  opencv: true        # pipeline OpenCV online (denoise + grayscale + equalizeHist)
+  grayscale: true     # grayscale c/ 3 canais idênticos (false = RGB original)
+  input_size: 512     # alvo do resize/crop (224 = tamanho nativo do ImageNet)
+  crop: center        # center | random (RandomResizedCrop no treino) | letterbox (sem perda, padding central)
+  random_erasing: false
+
+# front-end de reducao ANTES do backbone (reduz input_size pela metade):
+#   none: sem front-end (backbone recebe input_size)
+#   avg:  AveragePool2d(s=2) - downscale fixo
+#   conv: Conv2d k=32 s=2 - filtro grande gaussiano, APRENDIDO (anti-aliasing)
+# Usar com input_size par (ex.: 1024 -> backbone recebe 512).
+frontend: none
+
 results_dir: ../cnn-skin-model-runs  # tudo versionado via Git LFS: mlflow/, tensorboard/, hydra/, metrics/
 
 hydra:

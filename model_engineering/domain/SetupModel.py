@@ -6,6 +6,7 @@ from domain.Vgg16 import SetupModelVgg
 from domain.ResNet152 import SetupModelResNet152
 from domain.Vit import SetupModelViT
 from domain.Swim import SetupModelSwin
+from domain.FrontEnd import attach_frontend
 
 
 SCHEDULERS = {
@@ -27,10 +28,22 @@ class SetupModel:
         self.dropout_prob = dropout_prob
         self.scheduler_name = scheduler
 
-    def setup_model(self, device, lr=0.01, momentum=0.9, weight_decay=0.0001, optimizer_name='sgd', scheduler_name=None, epochs=50, unfreeze_blocks=0, pos_weight=0):
+    def setup_model(self, device, lr=0.01, momentum=0.9, weight_decay=0.0001, optimizer_name='sgd', scheduler_name=None, epochs=50, unfreeze_blocks=0, pos_weight=0, frontend="none", frontend_input_size=512):
         scheduler_name = scheduler_name or self.scheduler_name
 
         model = self._initialize_model(device)
+
+        if frontend in ("avg", "conv"):
+            # o front-end reduz a entrada pela metade; o backbone recebe
+            # frontend_input_size // 2 (ex.: input 1024 -> backbone 512)
+            attach_frontend(
+                model, mode=frontend,
+                target_size=frontend_input_size // 2,
+            )
+            print(f"  Front-end '{frontend}' ativo: "
+                  f"{frontend_input_size}x{frontend_input_size} -> "
+                  f"{frontend_input_size // 2}x{frontend_input_size // 2}")
+
         if pos_weight > 0:
             loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=device))
             print(f"  pos_weight={pos_weight:.3f} aplicado ao BCEWithLogitsLoss")

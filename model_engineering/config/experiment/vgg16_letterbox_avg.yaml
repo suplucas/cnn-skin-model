@@ -1,0 +1,39 @@
+defaults:
+  - model: vgg16
+  - _self_
+
+# Letterbox 1024 + front-end fixo (AveragePool s=2): 1024 -> 512.
+# Controle do front-end conv: mesmo pipeline, downscale nao aprendido.
+training:
+  epochs: 50
+  batch_size: 32
+  num_workers: 4
+  lr: 0.0001
+  momentum: 0.9
+  weight_decay: 0.0001
+  optimizer: adam
+  scheduler: plateau
+  patience: 7
+  min_delta: 0.001
+  unfreeze_blocks: 2
+  pos_weight: 1.96
+
+data:
+  csv: dataset.csv
+  folds: 4
+  fold: 1
+  preprocessed_dir: ""
+
+preprocessing:
+  opencv: false
+  grayscale: false
+  input_size: 1024
+  crop: letterbox
+  random_erasing: false
+
+frontend: avg
+
+results_dir: ../cnn-skin-model-runs
+
+seed: 42
+dp: false

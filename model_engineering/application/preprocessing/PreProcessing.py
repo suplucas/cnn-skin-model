@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 import numpy as np
 
+from PIL import Image
 from torchvision import transforms
 from torchvision.transforms.functional import to_pil_image
 from application.dataset.CustomDataset import CustomDataset
@@ -13,60 +14,102 @@ from application.dataset.CustomDataset import CustomDataset
 import cv2
 
 
+class Letterbox:
+    """Redimensiona mantendo o aspecto e faz padding central ate um quadrado.
+
+    Diferente de CenterCrop, nao descarta nenhum trecho da imagem:
+    o lado curto vira `size` e o lado longo recebe bordas de `fill`.
+    """
+
+    def __init__(self, size, fill=114):
+        self.size = size
+        self.fill = (fill, fill, fill)
+
+    def __call__(self, img):
+        w, h = img.size
+        scale = self.size / max(w, h)
+        new_w = max(1, round(w * scale))
+        new_h = max(1, round(h * scale))
+        resized = img.resize((new_w, new_h), Image.BILINEAR)
+        canvas = Image.new("RGB", (self.size, self.size), self.fill)
+        canvas.paste(resized, ((self.size - new_w) // 2, (self.size - new_h) // 2))
+        return canvas
+
+
 class OpenCVPreprocessing:
+    """Pipeline OpenCV: denoise + grayscale + equalizeHist.
+
+    Atencao: grayscale produz 3 canais identicos (GRAY2RGB).
+    Backbones pre-treinados no ImageNet esperam RGB real;
+    desative via grayscale=False quando for testar RGB original.
+    """
+
+    def __init__(self, denoise=True, grayscale=True, equalize=True):
+        self.denoise = denoise
+        self.grayscale = grayscale
+        self.equalize = equalize
+
     def __call__(self, image):
         image = np.array(image)
-        denoised = cv2.fastNlMeansDenoisingColored(
-            image, None, h=10, templateWindowSize=5, searchWindowSize=19
-        )
-        gray = cv2.cvtColor(denoised, cv2.COLOR_BGR2GRAY)
-        equalized = cv2.equalizeHist(gray)
-        equalized_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
-        return to_pil_image(equalized_rgb)
+        if self.denoise:
+            image = cv2.fastNlMeansDenoisingColored(
+                image, None, h=10, templateWindowSize=5, searchWindowSize=19
+            )
+        if self.grayscale:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            if self.equalize:
+                gray = cv2.equalizeHist(gray)
+            image = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+        return to_pil_image(image)
 
 
 class ImageProcessing():
-    def __init__(self, preprocessed_dir=None):
-        base = [
-            transforms.Resize(512),
-            transforms.CenterCrop(512),
+    """Monta os transforms de treino/validacao.
+
+    opencv/grayscale controlam o pipeline OpenCV (aplicado apenas quando
+    ha imagens cruas; com preprocessed_dir as imagens ja vem processadas
+    em disco).
+    """
+
+    def __init__(self, preprocessed_dir=None, input_size=512, crop="center",
+                 random_erasing=False, opencv=True, grayscale=True):
+        if crop == "letterbox":
+            spatial_train = [Letterbox(input_size)]
+            spatial_val = [Letterbox(input_size)]
+        else:
+            spatial_train = [
+                transforms.Resize(input_size),
+                transforms.RandomResizedCrop(input_size, scale=(0.8, 1.0))
+                if crop == "random" else transforms.CenterCrop(input_size),
+            ]
+            spatial_val = [
+                transforms.Resize(input_size),
+                transforms.CenterCrop(input_size),
+            ]
+
+        augment = [
+            transforms.RandomRotation(50, fill=1),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomVerticalFlip(p=0.5),
+            transforms.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.1),
+        ]
+        if random_erasing:
+            augment.append(transforms.RandomErasing(p=0.25, scale=(0.02, 0.33)))
+
+        normalize = [
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
 
-        if preprocessed_dir:
-            self.train_transforms = transforms.Compose([
-                *base,
-                transforms.RandomRotation(50, fill=1),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomVerticalFlip(p=0.5),
-                transforms.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.1),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
+        opencv_step = [OpenCVPreprocessing(grayscale=grayscale)] if opencv else []
 
-            self.val_transforms = transforms.Compose([
-                *base,
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
+        if preprocessed_dir:
+            self.train_transforms = transforms.Compose([*spatial_train, *augment, *normalize])
+            self.val_transforms = transforms.Compose([*spatial_val, *normalize])
             self.csv_path = 'dataset_preprocessed.csv'
         else:
-            self.train_transforms = transforms.Compose([
-                OpenCVPreprocessing(),
-                *base,
-                transforms.RandomRotation(50, fill=1),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomVerticalFlip(p=0.5),
-                transforms.ColorJitter(brightness=0.2, contrast=0.3, saturation=0.1),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
-
-            self.val_transforms = transforms.Compose([
-                OpenCVPreprocessing(),
-                *base,
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ])
+            self.train_transforms = transforms.Compose([*opencv_step, *spatial_train, *augment, *normalize])
+            self.val_transforms = transforms.Compose([*opencv_step, *spatial_val, *normalize])
             self.csv_path = 'dataset.csv'
 
     def pre_processing(self, fold, batch_size, num_workers=4, rank=0, world_size=1):

@@ -21,7 +21,7 @@ from omegaconf import DictConfig, OmegaConf
 
 import hydra
 
-from application.preprocessing.PreProcessing import ImageProcessing, OpenCVPreprocessing
+from application.preprocessing.PreProcessing import ImageProcessing, OpenCVPreprocessing, Letterbox
 from application.cmd.Training import Training
 import subprocess
 from application.dataset.CustomDataset import CustomDataset
@@ -123,7 +123,7 @@ def monitor_resources():
     return mem_usage, cpu_usage
 
 
-def _prepare_cam_sample(test_loader):
+def _prepare_cam_sample(test_loader, input_size=512, opencv=True, grayscale=True, crop="center"):
     subset = test_loader.dataset
     idx = subset.indices[0]
     custom_dataset = subset.dataset
@@ -134,13 +134,16 @@ def _prepare_cam_sample(test_loader):
         return None
     pil_img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
 
-    spatial = transforms.Compose([
-        transforms.Resize(512),
-        transforms.CenterCrop(512),
-    ])
+    if crop == "letterbox":
+        spatial = transforms.Compose([Letterbox(input_size)])
+    else:
+        spatial = transforms.Compose([
+            transforms.Resize(input_size),
+            transforms.CenterCrop(input_size),
+        ])
     cropped = spatial(pil_img)
 
-    processed = OpenCVPreprocessing()(cropped)
+    processed = OpenCVPreprocessing(grayscale=grayscale)(cropped) if opencv else cropped
     raw_np = np.array(processed).astype(np.float32) / 255.0
 
     to_tensor = transforms.Compose([
@@ -155,7 +158,8 @@ def _prepare_cam_sample(test_loader):
 def run_training(model, train_loader, test_loader, epochs, device, optimizer,
                  loss_fn, scheduler, model_name=None, cam_sample=None,
                  rank=0, world_size=1, parallelism="none",
-                 patience=7, min_delta=0.001, results_dir=".."):
+                 patience=7, min_delta=0.001, results_dir="..",
+                 input_size=512):
     cam_interval = max(1, epochs // 5)
     timestamp = int(time.time())
     save_path = os.path.join(results_dir, "tensorboard",
@@ -165,7 +169,7 @@ def run_training(model, train_loader, test_loader, epochs, device, optimizer,
     start_time = time.time()
 
     if writer:
-        dummy_input = torch.randn(1, 3, 512, 512).to(device)
+        dummy_input = torch.randn(1, 3, input_size, input_size).to(device)
         try:
             graph_model = model.module if hasattr(model, 'module') else model
             writer.add_graph(graph_model, dummy_input)
@@ -277,14 +281,26 @@ def run_training(model, train_loader, test_loader, epochs, device, optimizer,
 def train_fold(cfg, fold, local_rank, world_size):
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
-    dataset = ImageProcessing(preprocessed_dir=cfg.data.preprocessed_dir or None)
+    pre = cfg.preprocessing
+    dataset = ImageProcessing(
+        preprocessed_dir=cfg.data.preprocessed_dir or None,
+        input_size=pre.input_size,
+        crop=pre.crop,
+        random_erasing=pre.random_erasing,
+        opencv=pre.opencv,
+        grayscale=pre.grayscale,
+    )
     train_loader, test_loader = dataset.pre_processing(
         fold=fold, batch_size=cfg.training.batch_size,
         num_workers=cfg.training.num_workers,
         rank=local_rank, world_size=world_size
     )
 
-    cam_sample = _prepare_cam_sample(test_loader) if is_main_process() else None
+    cam_sample = _prepare_cam_sample(
+        test_loader, input_size=pre.input_size,
+        opencv=pre.opencv, grayscale=pre.grayscale,
+        crop=pre.crop,
+    ) if is_main_process() else None
 
     setup = SetupModel(cfg.model, scheduler=cfg.training.scheduler)
     model, loss_fn, optimizer, scheduler = setup.setup_model(
@@ -295,6 +311,8 @@ def train_fold(cfg, fold, local_rank, world_size):
         epochs=cfg.training.epochs,
         unfreeze_blocks=cfg.training.unfreeze_blocks,
         pos_weight=cfg.training.pos_weight,
+        frontend=cfg.frontend,
+        frontend_input_size=pre.input_size,
     )
 
     parallelism = "DDP" if world_size > 1 else ("DataParallel" if cfg.dp else "none")
@@ -313,14 +331,28 @@ def train_fold(cfg, fold, local_rank, world_size):
         loss_fn, scheduler, model_name=cfg.model, cam_sample=cam_sample,
         rank=local_rank, world_size=world_size, parallelism=parallelism,
         patience=cfg.training.patience, min_delta=cfg.training.min_delta,
-        results_dir=cfg.results_dir,
+        results_dir=cfg.results_dir, input_size=cfg.preprocessing.input_size,
     )
     metrics["fold"] = fold
     return metrics
 
 
+CFG_DEFAULTS = {
+    "preprocessing": {
+        "opencv": True,
+        "grayscale": True,
+        "input_size": 512,
+        "crop": "center",
+        "random_erasing": False,
+    },
+    "frontend": "none",
+}
+
+
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig):
+    # exps antigos podem nao ter as secoes novas: preenche defaults
+    cfg = OmegaConf.merge(OmegaConf.create(CFG_DEFAULTS), cfg)
     set_seed(cfg.seed)
 
     results_dir = cfg.results_dir

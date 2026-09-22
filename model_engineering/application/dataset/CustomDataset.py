@@ -3,15 +3,33 @@ import re
 import hashlib
 import torch
 import mlflow
-from PIL import Image
+from PIL import Image, ImageOps
 from pandas import read_csv
 from torch.utils.data import Dataset
 from sklearn.model_selection import StratifiedKFold
 from torchvision import transforms
 
 
+def _resolve_csv(csv_file):
+    """Resolve o caminho do CSV.
+
+    Hydra muda o cwd para o job dir durante a execucao; se o CSV nao
+    estiver no cwd, tenta a raiz do projeto (model_engineering/).
+    """
+    if os.path.isabs(csv_file) or os.path.exists(csv_file):
+        return csv_file
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    candidate = os.path.join(project_root, csv_file)
+    if os.path.exists(candidate):
+        return candidate
+    return csv_file
+
+
 class CustomDataset(Dataset):
     def __init__(self, csv_file, transform=None, target_transform=None, data_dir=None):
+        csv_file = _resolve_csv(csv_file)
         print(f"[DEBUG] Lendo CSV de: {csv_file}")
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"Arquivo {csv_file} não encontrado.")
@@ -61,6 +79,8 @@ class CustomDataset(Dataset):
     def __getitem__(self, idx):
         image_path = self.data.iloc[int(idx)]['img_name']
         image = Image.open(image_path)
+        # aplica rotacao EXIF (fotos de celular: ~7% com orientacao 90/180 graus)
+        image = ImageOps.exif_transpose(image)
         label = self.data.iloc[idx]['labels']
             
         if self.transform:

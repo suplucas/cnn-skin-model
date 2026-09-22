@@ -1,0 +1,36 @@
+defaults:
+  - model: vgg16
+  - _self_
+
+# Mesmo pipeline sane, mas com input 224x224 (tamanho nativo do ImageNet).
+training:
+  epochs: 50
+  batch_size: 32
+  num_workers: 4
+  lr: 0.0001
+  momentum: 0.9
+  weight_decay: 0.0001
+  optimizer: adam
+  scheduler: plateau
+  patience: 7
+  min_delta: 0.001
+  unfreeze_blocks: 2
+  pos_weight: 1.96
+
+data:
+  csv: dataset.csv
+  folds: 4
+  fold: 1
+  preprocessed_dir: ""
+
+preprocessing:
+  opencv: false
+  grayscale: false
+  input_size: 224
+  crop: center
+  random_erasing: false
+
+results_dir: ../cnn-skin-model-runs
+
+seed: 42
+dp: false

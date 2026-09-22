@@ -1,0 +1,37 @@
+defaults:
+  - model: vgg16
+  - _self_
+
+# Treino "sane" principal: RGB original (sem OpenCV grayscale),
+# Adam 1e-4, unfreeze 2, pos_weight 1.96.
+training:
+  epochs: 50
+  batch_size: 32
+  num_workers: 4
+  lr: 0.0001
+  momentum: 0.9
+  weight_decay: 0.0001
+  optimizer: adam
+  scheduler: plateau
+  patience: 7
+  min_delta: 0.001
+  unfreeze_blocks: 2
+  pos_weight: 1.96
+
+data:
+  csv: dataset.csv
+  folds: 4
+  fold: 1
+  preprocessed_dir: ""
+
+preprocessing:
+  opencv: false       # remove denoise + grayscale + equalizeHist
+  grayscale: false
+  input_size: 512
+  crop: center
+  random_erasing: false
+
+results_dir: ../cnn-skin-model-runs
+
+seed: 42
+dp: false
